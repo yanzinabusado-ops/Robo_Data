@@ -17,8 +17,8 @@ import os
 from datetime import datetime
 
 # Caminhos padrão para entrada e logs
-ARQUIVO_PADRAO = r"\\br03file\pcoudir\Operacoes\10. Planning Raw Material\Gerenciamento de materiais\Atividades diarias\Robo Atualizacao de Datas Fornecedores\Alterar_pedidos.xlsx"
-LOG_PASTA = r"\\br03file\pcoudir\Operacoes\10. Planning Raw Material\Gerenciamento de materiais\Atividades diarias\Robo Atualizacao de Datas Fornecedores\Log"
+ARQUIVO_PADRAO = r"Arquivo.xlsx"
+LOG_PASTA = r"Log"
 
 # Variáveis globais para comunicação com a interface gráfica
 progress_callback = None
