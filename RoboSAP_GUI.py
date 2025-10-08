@@ -3,21 +3,23 @@ import os
 import time
 import getpass
 import requests
+import json
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QProgressBar, QLabel, QPushButton, QMessageBox, 
-    QSizePolicy, QFrame, QGraphicsDropShadowEffect, QSpacerItem
+    QSizePolicy, QFrame, QGraphicsDropShadowEffect, QSpacerItem,
+    QFileDialog, QLineEdit
 )
 from PyQt6.QtGui import QFont, QIcon, QCursor, QPixmap, QPainter, QColor, QPalette
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QRect
 
-# Import do script do SAP
+# Módulo de automação SAP (operações de backend)
 import Sap
 
 USUARIO = getpass.getuser().upper()
 
-# Cores da interface (cores da empresa)
+# Paleta base de cores da interface (aderente à identidade visual)
 BG_COLOR = '#82298c'
 FG_COLOR = "#ffffff"
 ACCENT_COLOR = '#a94bb9'
@@ -25,31 +27,50 @@ LOG_BG_COLOR = '#682077'
 BUTTON_COLOR = '#9436a6'
 BUTTON_HOVER = '#b44fc6'
 
-# Paleta clean e moderna baseada nas cores da empresa
+# Mapa de cores para uso consistente na UI
 COLORS = {
     'primary': BUTTON_COLOR,
     'primary_hover': BUTTON_HOVER,
     'accent': ACCENT_COLOR,
     'background': BG_COLOR,
-    'surface': '#732082',        # Tom mais suave para cards
-    'surface_elevated': '#7d2b8a', # Cards elevados
+    'surface': '#732082',
+    'surface_elevated': '#7d2b8a',
     'text': FG_COLOR,
-    'text_secondary': '#e8d5ed',  # Texto secundário mais sutil
-    'text_muted': '#c9b3d1',     # Texto esmaecido
-    'border': 'rgba(255, 255, 255, 0.1)', # Bordas quase invisíveis
+    'text_secondary': '#e8d5ed',
+    'text_muted': '#c9b3d1',
+    'border': 'rgba(255, 255, 255, 0.1)',
     'success': '#4ade80',
     'warning': '#fb923c',
     'error': '#f87171'
 }
 
-TEMPO_FINAL = 5
-
-# Pasta para logs
+# Diretório de logs da aplicação (contexto do usuário)
 LOGS_DIR = os.path.join(os.path.expanduser("~"), "SAP_Robo_Logs")
 if not os.path.exists(LOGS_DIR):
     os.makedirs(LOGS_DIR)
 
-# --- Componentes minimalistas ---
+# Caminho do arquivo de configuração persistente
+CONFIG_FILE = os.path.join(LOGS_DIR, "config.json")
+
+def load_config():
+    """Carrega configurações salvas"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_config(config):
+    """Salva configurações"""
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Erro ao salvar configuração: {e}")
+
+# --- Componentes de UI ---
 class CleanCard(QFrame):
     def __init__(self, elevated=False):
         super().__init__()
@@ -196,14 +217,17 @@ class WorkerThread(QThread):
     status_signal = pyqtSignal(str, str)
     finished_signal = pyqtSignal(float)
 
-    def __init__(self):
+    def __init__(self, arquivo_excel=None):
         super().__init__()
         self._running = True
+        self.arquivo_excel = arquivo_excel
         timestamp = time.strftime("%d%m%Y_%H%M%S")
         self.log_path = os.path.join(LOGS_DIR, f"{USUARIO}_{timestamp}.log")
 
     def stop(self):
         self._running = False
+        # Ponto de extensão: sinalizar parada no módulo SAP (se/quando implementado)
+        Sap.sinalizar_parada()
 
     def run(self):
         start_time = time.time()
@@ -216,16 +240,23 @@ class WorkerThread(QThread):
             log_cb=self.log_signal.emit
         )
 
+        # Definir o arquivo Excel a ser usado (se fornecido)
+        if self.arquivo_excel:
+            Sap.set_arquivo_excel(self.arquivo_excel)
+            self._write_log(f"Arquivo selecionado: {self.arquivo_excel}")
+
         try:
             # Executar o processo SAP integrado
             Sap.main()
             
-            if self._running:  # Só marca como sucesso se não foi cancelado
+            if self._running:
                 self._write_log("✓ Execução concluída com sucesso")
+                self.status_signal.emit("Concluído com sucesso", "success")
                 
         except Exception as e:
             error_msg = f"✗ Erro crítico: {e}"
             self._write_log(error_msg)
+            self.log_signal.emit(error_msg)
             self.status_signal.emit("Erro crítico", "error")
 
         end_time = time.time()
@@ -239,20 +270,31 @@ class WorkerThread(QThread):
         except Exception as e:
             print(f"Erro ao escrever log: {e}")
 
-# --- Interface Clean ---
+# --- Janela principal ---
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SAP Robot")
-        self.setMinimumSize(900, 650)
-        self.resize(1000, 750)
+        self.setMinimumSize(900, 700)
+        self.resize(1000, 800)
+        
+        # Carregar configurações persistidas
+        self.config = load_config()
+        self.arquivo_selecionado = self.config.get('ultimo_arquivo', None)
         
         self._setup_window()
         self._setup_ui()
+        
+        # Restaura o último arquivo selecionado, quando aplicável
+        if self.arquivo_selecionado and os.path.exists(self.arquivo_selecionado):
+            self.file_path_input.setText(self.arquivo_selecionado)
+            self.clear_file_btn.setVisible(True)
+            self.adicionar_log(f"📂 Arquivo carregado das configurações: {os.path.basename(self.arquivo_selecionado)}")
+        
         self.worker = None
 
     def _setup_window(self):
-        # Ícone da janela
+        # Ícone da aplicação
         url_icon = "https://i.ibb.co/m5LgjRfL/Robo.png"
         try:
             resposta_icon = requests.get(url_icon, timeout=3)
@@ -263,8 +305,8 @@ class MainWindow(QWidget):
         except:
             pass
         
-        # Estilo global ultra-clean
-        self.setStyleSheet(f"""
+        # Estilos globais da aplicação (tema)
+        style_sheet = f"""
             * {{
                 font-family: 'Inter', 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
             }}
@@ -286,6 +328,24 @@ class MainWindow(QWidget):
                 selection-background-color: {COLORS['accent']};
             }}
             
+            QLineEdit {{
+                background-color: rgba(0, 0, 0, 0.2);
+                color: {COLORS['text']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 13px;
+            }}
+            
+            QLineEdit:focus {{
+                border: 1px solid {COLORS['accent']};
+            }}
+            
+            QLineEdit:disabled {{
+                background-color: rgba(0, 0, 0, 0.1);
+                color: {COLORS['text_muted']};
+            }}
+            
             QScrollBar:vertical {{
                 background-color: transparent;
                 width: 6px;
@@ -301,30 +361,47 @@ class MainWindow(QWidget):
             QScrollBar::handle:vertical:hover {{
                 background-color: rgba(255, 255, 255, 0.3);
             }}
-        """)
+            
+            QScrollBar:horizontal {{
+                background-color: transparent;
+                height: 6px;
+                border-radius: 3px;
+            }}
+            
+            QScrollBar::handle:horizontal {{
+                background-color: rgba(255, 255, 255, 0.2);
+                border-radius: 3px;
+                min-width: 20px;
+            }}
+            
+            QScrollBar::handle:horizontal:hover {{
+                background-color: rgba(255, 255, 255, 0.3);
+            }}
+        """
+        self.setStyleSheet(style_sheet)
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(32, 32, 32, 32)
         main_layout.setSpacing(24)
 
-        # Header ultra-minimalista
+        # Cabeçalho
         header_layout = QHBoxLayout()
         
-        # Logo pequeno e elegante
+        # Logo
         logo_label = QLabel()
         self._setup_logo(logo_label)
         header_layout.addWidget(logo_label)
         
         header_layout.addSpacing(16)
         
-        # Título clean
+        # Título e subtítulo
         title_container = QVBoxLayout()
         title = QLabel("SAP Robot")
         title.setFont(QFont("Inter", 28, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {COLORS['text']}; margin: 0;")
         
-        subtitle = QLabel("Automação de alteração de datas")
+        subtitle = QLabel("Automação de alteração de Datas")
         subtitle.setFont(QFont("Inter", 14, QFont.Weight.Normal))
         subtitle.setStyleSheet(f"color: {COLORS['text_secondary']}; margin: 0;")
         
@@ -335,7 +412,7 @@ class MainWindow(QWidget):
         
         header_layout.addStretch()
         
-        # Status minimalista
+        # Indicador de status atual
         status_layout = QHBoxLayout()
         self.status_dot = StatusDot()
         self.status_text = QLabel("Pronto")
@@ -350,22 +427,52 @@ class MainWindow(QWidget):
         header_layout.addLayout(status_layout)
         main_layout.addLayout(header_layout)
 
-        # Spacer elegante
+        # Espaçamento entre seções
         main_layout.addSpacing(8)
 
-        # Card de log minimalista
+        # Seletor de arquivo de entrada (Excel)
+        file_selector_layout = QHBoxLayout()
+        file_selector_layout.setSpacing(12)
+        
+        file_icon = QLabel("📂")
+        file_icon.setFont(QFont("Inter", 16))
+        file_selector_layout.addWidget(file_icon)
+        
+        self.file_path_input = QLineEdit()
+        self.file_path_input.setPlaceholderText("Arquivo padrão (clique em Procurar para alterar)")
+        self.file_path_input.setReadOnly(True)
+        self.file_path_input.setMaximumHeight(44)
+        file_selector_layout.addWidget(self.file_path_input, stretch=1)
+        
+        self.browse_btn = ModernButton("Procurar", 'ghost')
+        self.browse_btn.setMinimumWidth(100)
+        self.browse_btn.setMaximumHeight(44)
+        self.browse_btn.clicked.connect(self.selecionar_arquivo)
+        file_selector_layout.addWidget(self.browse_btn)
+        
+        self.clear_file_btn = ModernButton("✕", 'ghost')
+        self.clear_file_btn.setFixedSize(44, 44)
+        self.clear_file_btn.setToolTip("Limpar seleção")
+        self.clear_file_btn.clicked.connect(self.limpar_arquivo)
+        self.clear_file_btn.setVisible(False)
+        file_selector_layout.addWidget(self.clear_file_btn)
+        
+        main_layout.addLayout(file_selector_layout)
+        main_layout.addSpacing(8)
+
+        # Área de logs
         log_card = CleanCard(elevated=True)
         log_layout = QVBoxLayout(log_card)
         log_layout.setSpacing(16)
         
-        # Header do log
+        # Cabeçalho do console de logs
         log_header = QHBoxLayout()
         log_title = QLabel("Console")
         log_title.setFont(QFont("Inter", 16, QFont.Weight.Medium))
         log_header.addWidget(log_title)
         log_header.addStretch()
         
-        # User info discreto
+        # Identificação do usuário
         user_label = QLabel(f"@{USUARIO.lower()}")
         user_label.setFont(QFont("Inter", 12))
         user_label.setStyleSheet(f"color: {COLORS['text_muted']};")
@@ -373,20 +480,20 @@ class MainWindow(QWidget):
         
         log_layout.addLayout(log_header)
         
-        # Log area
+        # Área do console de logs
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMinimumHeight(300)
+        self.log_area.setMinimumHeight(250)
         self.log_area.setPlainText("🤖 SAP Robot carregado e pronto para execução...")
         log_layout.addWidget(self.log_area)
         
         main_layout.addWidget(log_card, stretch=1)
 
-        # Controls minimalistas
+        # Controles inferiores (progresso e ações)
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(16)
         
-        # Progress bar discreto
+        # Indicador de progresso
         progress_container = QVBoxLayout()
         progress_container.setSpacing(8)
         
@@ -410,7 +517,7 @@ class MainWindow(QWidget):
         
         controls_layout.addLayout(progress_container, stretch=1)
         
-        # Botões elegantes
+        # Botões de ação
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(12)
         
@@ -444,35 +551,80 @@ class MainWindow(QWidget):
         logo_label.setFont(QFont("Inter", 24))
         logo_label.setStyleSheet(f"color: {COLORS['accent']};")
 
+    def selecionar_arquivo(self):
+        """Abre o diálogo do sistema para selecionar o arquivo Excel de entrada."""
+        diretorio_inicial = os.path.expanduser("~")
+        if self.arquivo_selecionado and os.path.exists(self.arquivo_selecionado):
+            diretorio_inicial = os.path.dirname(self.arquivo_selecionado)
+        
+        arquivo, _ = QFileDialog.getOpenFileName(
+            self,
+            "Selecionar Arquivo Excel",
+            diretorio_inicial,
+            "Arquivos Excel (*.xlsx *.xls);;Todos os arquivos (*.*)"
+        )
+        
+        if arquivo:
+            self.arquivo_selecionado = arquivo
+            self.file_path_input.setText(arquivo)
+            self.clear_file_btn.setVisible(True)
+            self.adicionar_log(f"📂 Arquivo selecionado: {os.path.basename(arquivo)}")
+            
+            self.config['ultimo_arquivo'] = arquivo
+            save_config(self.config)
+            
+    def limpar_arquivo(self):
+        """Limpa a seleção atual do arquivo, voltando ao arquivo padrão."""
+        self.arquivo_selecionado = None
+        self.file_path_input.clear()
+        self.file_path_input.setPlaceholderText("Arquivo padrão (clique em Procurar para alterar)")
+        self.clear_file_btn.setVisible(False)
+        self.adicionar_log("🗑️ Seleção de arquivo limpa - usando arquivo padrão")
+        
+        if 'ultimo_arquivo' in self.config:
+            del self.config['ultimo_arquivo']
+            save_config(self.config)
+
     def iniciar_execucao(self):
         if self.worker and self.worker.isRunning():
             return
-            
-        # Resetar interface
+        
+        if self.arquivo_selecionado:
+            if not os.path.exists(self.arquivo_selecionado):
+                QMessageBox.warning(
+                    self,
+                    "Arquivo não encontrado",
+                    f"O arquivo selecionado não existe:\n{self.arquivo_selecionado}"
+                )
+                return
+        
         self.log_area.clear()
         self.progress_bar.setValue(0)
         self.progress_value.setText("0%")
         self.status_dot.set_status('running')
         self.status_text.setText("Iniciando")
         
-        # Criar e configurar worker
-        self.worker = WorkerThread()
+        # Inicializa e executa a thread de trabalho (processo SAP)
+        self.worker = WorkerThread(arquivo_excel=self.arquivo_selecionado)
         self.worker.log_signal.connect(self.adicionar_log)
         self.worker.progress_signal.connect(self.atualizar_progresso)
         self.worker.status_signal.connect(self.atualizar_status)
         self.worker.finished_signal.connect(self.execucao_finalizada)
         self.worker.start()
 
-        # Atualizar botões
         self.start_btn.setEnabled(False)
         self.start_btn.setText("Executando...")
         self.cancel_btn.setEnabled(True)
+        self.browse_btn.setEnabled(False)
+        self.clear_file_btn.setEnabled(False)
 
     def adicionar_log(self, texto):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_area.append(f"[{timestamp}] {texto}")
+        if texto.startswith("[") and "]" in texto[:10]:
+            self.log_area.append(texto)
+        else:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.log_area.append(f"[{timestamp}] {texto}")
         
-        # Auto-scroll para o final
         scrollbar = self.log_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -494,34 +646,34 @@ class MainWindow(QWidget):
             self.status_text.setText("Cancelado")
             self.adicionar_log("⚠️ Execução cancelada pelo usuário")
             
-            # Resetar botões
             self.cancel_btn.setEnabled(False)
             self.start_btn.setEnabled(True)
             self.start_btn.setText("Executar")
+            self.browse_btn.setEnabled(True)
+            if self.arquivo_selecionado:
+                self.clear_file_btn.setEnabled(True)
             
-            # Resetar progresso
             self.progress_bar.setValue(0)
             self.progress_value.setText("0%")
 
     def execucao_finalizada(self, tempo_total):
-        # Resetar botões
         self.cancel_btn.setEnabled(False)
         self.start_btn.setEnabled(True)
         self.start_btn.setText("Executar")
+        self.browse_btn.setEnabled(True)
+        if self.arquivo_selecionado:
+            self.clear_file_btn.setEnabled(True)
         
         tempo_min = tempo_total / 60
+        status_atual = self.status_text.text().lower()
         
-        # Determinar tipo de finalização baseado no status atual
-        status_atual = self.status_text.text()
-        
-        # Dialog minimalista personalizado
         msg = QMessageBox(self)
         msg.setWindowTitle("Execução Finalizada")
         
-        if "sucesso" in status_atual.lower() or "concluído" in status_atual.lower():
+        if "sucesso" in status_atual or "concluído" in status_atual:
             msg.setIcon(QMessageBox.Icon.Information)
             msg.setText("🎉 SAP Robot finalizado com sucesso!")
-        elif "erro" in status_atual.lower():
+        elif "erro" in status_atual:
             msg.setIcon(QMessageBox.Icon.Warning)
             msg.setText("⚠️ SAP Robot finalizado com erros")
         else:
@@ -530,8 +682,7 @@ class MainWindow(QWidget):
         
         msg.setInformativeText(f"⏱️ Tempo total: {tempo_min:.1f} minutos\n📝 Logs salvos automaticamente")
         
-        # Aplicar estilo ao dialog
-        msg.setStyleSheet(f"""
+        msg_style = f"""
             QMessageBox {{
                 background-color: {COLORS['surface']};
                 color: {COLORS['text']};
@@ -559,12 +710,11 @@ class MainWindow(QWidget):
             QMessageBox QPushButton:pressed {{
                 background-color: {COLORS['primary']};
             }}
-        """)
-        
+        """
+        msg.setStyleSheet(msg_style)
         msg.exec()
 
     def closeEvent(self, event):
-        # Parar worker se estiver executando
         if self.worker and self.worker.isRunning():
             reply = QMessageBox.question(
                 self, 
@@ -577,7 +727,7 @@ class MainWindow(QWidget):
             if reply == QMessageBox.StandardButton.Yes:
                 self.worker.stop()
                 self.worker.quit()
-                self.worker.wait(3000)  # Aguarda 3 segundos
+                self.worker.wait(3000)
                 event.accept()
             else:
                 event.ignore()
@@ -587,8 +737,8 @@ class MainWindow(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    
-    # Definir propriedades da aplicação
+
+    # Metadados da aplicação
     app.setApplicationName("SAP Robot")
     app.setApplicationVersion("2.0")
     app.setOrganizationName("Neodent")
